@@ -23,32 +23,37 @@ import json
 import numpy as np
 from pathlib import Path
 from itertools import islice
-from src.activation_functions import Linear, ReLu, Sigmoid, TanH
-from src.layers import AveragePooling2D, MaxPooling2D, InputLayer, Dense, Conv2D, Softmax
+from activation_functions import Linear, ReLu, Sigmoid, TanH
+from layers import AveragePooling2D, MaxPooling2D, InputLayer, Dense, Softmax, Conv2D_6loops, Conv2D_std_gemm, Conv2D_indirect_gemm
 from abc import ABC, abstractmethod
 
 class CodeGenerator(ABC):
 
-    def __init__(self, json_file, test_dataset_file = None, function_name = 'inference', nb_tests = None, **kwds):
+    def __init__(self, json_file, test_dataset_file = None, function_name = 'inference', nb_tests = None, conv_algorithm = 'conv_gemm_optim', **kwargs):
 
         self.json_file = json_file
         self.test_dataset_file = test_dataset_file
         self.function_name = function_name
         self.nb_tests = nb_tests
+        self.conv_algorithm = conv_algorithm
 
         l, dtype, dtype_py = self.load_json()
         self.layers = l
         self.data_type = dtype
         self.data_type_py = dtype_py
 
-        ds = self.load_test_dataset()
-        self.test_dataset = ds
-        
+        if test_dataset_file:
+            ds = self.load_test_dataset()
+            self.test_dataset = ds
+        else:
+            print("creating random dataset")
+            ds = self.create_test_dataset()
+            self.test_dataset = ds
+
     def load_json(self):
-        
+
         file = open(self.json_file, 'r')
         model = json.load(file)
-
         data_type = model['config']['layers'][0]['config']['dtype']
 
         if data_type == 'float64':
@@ -87,16 +92,35 @@ class CodeGenerator(ABC):
                 pass
         
             if layer['class_name'] == 'Dense':
-                current_layer = Dense(idx, layer['config']['units'], data_type_py(layer['weights']), data_type_py(layer['biases']), self.create_actv_function_obj(layer['config']['activation']))
+                current_layer = Dense(idx,
+                                    layer['config']['units'],
+                                    data_type_py(layer['weights']),
+                                    data_type_py(layer['biases']),
+                                    self.create_actv_function_obj(layer['config']['activation'])
+                                    )
             
-            elif layer['class_name'] == 'Conv2D': 
-                current_layer = Conv2D(idx, layer['config']['size'], layer['config']['padding'], layer['config']['strides'][0], layer['config']['kernel_size'][0], layer['config']['dilation_rate'][0], layer['config']['filters'], layer['config']['input_shape'], layer['config']['output_shape'], data_type_py(layer['weights']), data_type_py(layer['biases']), self.create_actv_function_obj(layer['config']['activation']))
-            
+            elif layer['class_name'] == 'Conv2D':                
+                current_layer = self.create_conv2d_obj(conv_algorithm = self.conv_algorithm,
+                                                idx = idx,
+                                                data_format = layer['config']['data_format'],
+                                                size = layer['config']['size'],
+                                                padding = layer['config']['padding'],
+                                                strides = layer['config']['strides'][0],
+                                                kernel_h = layer['config']['kernel_size'][0],
+                                                kernel_w = layer['config']['kernel_size'][1],
+                                                dilation_rate = layer['config']['dilation_rate'][0],
+                                                nb_filters = layer['config']['filters'],
+                                                input_shape = layer['config']['input_shape'],
+                                                output_shape = layer['config']['output_shape'],
+                                                weights = data_type_py(layer['weights']),
+                                                biases = data_type_py(layer['biases']),
+                                                activation_function = self.create_actv_function_obj(layer['config']['activation']))  
+
             elif layer['class_name'] == 'AveragePooling2D':
-                current_layer = AveragePooling2D(idx = idx, size = layer['config']['size'], padding = layer['config']['padding'], strides = layer['config']['strides'][0], pool_size = layer['config']['pool_size'][0], input_shape = layer['config']['input_shape'], output_shape = layer['config']['output_shape'])
+                current_layer = AveragePooling2D(idx = idx, data_format = layer['config']['data_format'], size = layer['config']['size'], padding = layer['config']['padding'], strides = layer['config']['strides'][0], pool_size = layer['config']['pool_size'][0], input_shape = layer['config']['input_shape'], output_shape = layer['config']['output_shape'])
             
             elif layer['class_name'] == 'MaxPooling2D':
-                current_layer = MaxPooling2D(idx = idx, size = layer['config']['size'], padding = layer['config']['padding'], strides = layer['config']['strides'][0], pool_size = layer['config']['pool_size'][0], input_shape = layer['config']['input_shape'], output_shape = layer['config']['output_shape'])
+                current_layer = MaxPooling2D(idx = idx, data_format = layer['config']['data_format'], size = layer['config']['size'], padding = layer['config']['padding'], strides = layer['config']['strides'][0], pool_size = layer['config']['pool_size'][0], input_shape = layer['config']['input_shape'], output_shape = layer['config']['output_shape'])
             
             elif layer['class_name'] == 'Flatten':
                 nb_flatten_layers = 1
@@ -107,7 +131,7 @@ class CodeGenerator(ABC):
             l_temp = current_layer
             layers.append(current_layer)
 
-            # Separeted method to generate softmax
+            # Separeted method to generate Softmax
             if add_softmax_layer:
                 nb_softmax_layers += 1
                 current_layer = Softmax(idx+1, l_temp.size)
@@ -143,6 +167,10 @@ class CodeGenerator(ABC):
         
         return test_dataset
 
+    def create_test_dataset(self):
+        test_dataset = np.float32(np.random.default_rng(seed=10).random((int(self.nb_tests),1,int(self.layers[0].size))))
+        return test_dataset 
+
     def compute_inference(self, c_files_directory):
         with open(os.path.join(c_files_directory, 'output_python.txt'), 'w+') as fi:
             for nn_input in self.test_dataset:
@@ -170,6 +198,17 @@ class CodeGenerator(ABC):
         print("File output_python.txt generated.")
 
         return nn_output
+
+    def create_conv2d_obj(self, **kwargs):
+       
+        if '6loops' in self.conv_algorithm:
+            return Conv2D_6loops(**kwargs)
+
+        elif 'std_gemm' in self.conv_algorithm:
+            return Conv2D_std_gemm(**kwargs)   
+
+        elif 'indirect_gemm' in self.conv_algorithm:
+            return Conv2D_indirect_gemm(**kwargs)
 
     def create_actv_function_obj(self, activation_str):
 
@@ -211,8 +250,12 @@ class CodeGenerator(ABC):
         ndim = array.ndim
         
         if ndim > 2:
-            array = array.reshape(-1, *array.shape[-(ndim-2):])
+            array = array.reshape(-1, *array.shape[-(ndim-2):], order='C')
             flattened_aray = array.flatten(order='F')
+
+        # if ndim > 2:
+        #     array = array.reshape(-1, *array.shape[-(ndim-3):], order = 'C')
+        #     flattened_array = array.flatten(order='F')    
 
         else:
             flattened_aray = array.flatten(order='F')
@@ -305,220 +348,9 @@ class CodeGenerator(ABC):
         self.makefile.write('	$(CC) $(LDFLAGS)  -o $@ $(OBJ) $(LBLIBS) $(CFLAGS)\n\n')
         self.makefile.write('clean:\n	rm $(EXEC)')
 
-class CodeGenerator_V1(CodeGenerator):
-    def __init__(self, **kwds):
-        super().__init__(**kwds)
-        self.version = 'v1'
-        self.files_to_gen = ['layers.c', 'layers.h', 'activation_functions.c', 'activation_functions.h', 'inference.c', 'inference.h', 'global_vars.c', 'main.c', 'Makefile']
-
-    def generate_c_files(self, c_files_directory):  
-
-        self.c_files_directory = c_files_directory
-
-        testdataset_files = ['test_dataset.h', 'test_dataset.c']
-        self.files_to_gen.extend(testdataset_files)
-            
-        q = 0
-        for file in self.files_to_gen:
-            filename = Path(os.path.join(self.c_files_directory, file))
-
-            if filename.is_file():
-                print("ERROR : " + file + " already exists !")
-                q += 1
-            
-        if q != 0 : exit()
-        
-        else:                               
-            self.layers_source_file = open(self.c_files_directory + '/layers.c' , "a+")
-            self.layers_header_file = open(self.c_files_directory + '/layers.h' , "a+")
-            self.actvfunctions_source_file = open(self.c_files_directory + '/activation_functions.c' , "a+")
-            self.actvfunctions_header_file = open(self.c_files_directory + '/activation_functions.h' , "a+")
-            self.source_file = open(self.c_files_directory + '/inference.c' , "a+")
-            self.header_file = open(self.c_files_directory + '/inference.h' , "a+")
-            self.globalvars_file = open(self.c_files_directory + '/global_vars.c' , "a+")
-            self.main_file = open(self.c_files_directory + '/main.c' , "a+")
-            self.makefile = open(self.c_files_directory + '/Makefile' , "a+")
-
-        self.generate_layers_c_files()
-        print('Generated layers files.')
-        self.generate_actvfunctions_c_files()   
-        print('Generated actvfunctions files.') 
-        self.generate_function_source_file()
-        print('Generated function source file.') 
-        self.generate_function_header_file()
-        print('Generated function header file.') 
-        self.generate_globalvars_file()
-        print('Generated globalvars .c file.') 
-        self.generate_main_file()
-        print('Generated main file.')
-        self.generate_makefile()
-        print('Generated Makefile.')
-        self.generate_testdataset_files()
-        print('Generated testdataset files.') 
-
-    def generate_layers_c_files(self):
-        
-        self.layers_source_file.write('#include <stdio.h> \n#include <math.h> \n#include "layers.h" \n#include "inference.h"\n\n')
-        self.layers_header_file.write('#ifndef LAYERS_H_ \n#define LAYERS_H_\n\n')
-
-        layers_to_write = []
-        for layer in self.layers:
-            if layer.name in layers_to_write:
-                pass
-            else:
-                layers_to_write.append(layer.name)
-                layer.write_to_layer_c_files(self.data_type, self.version, self.layers_source_file, self.layers_header_file)
-                
-        self.layers_header_file.write('\n#endif')
-
-    def generate_actvfunctions_c_files(self):
-
-        self.actvfunctions_source_file.write('#include <math.h> \n#include "activation_functions.h"\n\n')
-        self.actvfunctions_header_file.write('#ifndef ACTIVATIONS_H_\n#define ACTIVATIONS_H_\n\n')
-
-        activations_to_write = []
-        for layer in self.layers:
-            try:
-                if layer.activation_function.name in activations_to_write:
-                    pass
-                else:
-                    activations_to_write.append(layer.activation_function.name)
-                    layer.activation_function.generate_activation_c_files(self.data_type, self.actvfunctions_source_file, self.actvfunctions_header_file)
-                    
-            except AttributeError:
-                pass
-        
-        self.actvfunctions_header_file.write('\n#endif')
-
-    def generate_function_source_file(self):
-
-        self.source_file.write('#include <stdio.h> \n#include <math.h> \n#include "layers.h" \n#include "inference.h"\n\n')
-        self.source_file.write('int inference('+self.data_type+' prediction[net[nb_layers-1].layer_size], '+self.data_type+' nn_input[net[0].layer_size])\n{\n')
-        self.source_file.write('    static '+self.data_type+' output_pre[l_size_max];\n')
-        self.source_file.write('    static '+self.data_type+' output_cur[l_size_max];\n\n')
-        self.source_file.write('    net[0].layer_type(0, nn_input, output_pre);\n\n')
-        self.source_file.write('    for (int i=1; i < nb_layers; ++i)\n    {\n\n')
-        self.source_file.write('        net[i].layer_type(i, output_pre, output_cur);\n\n')
-        self.source_file.write('        for (int j = 0; j < net[i].layer_size; ++j){\n')
-        self.source_file.write('            if (i < nb_layers-1){\n')
-        self.source_file.write('                output_pre[j] = output_cur[j];\n            }\n')
-        self.source_file.write('            else\n')
-        self.source_file.write('                prediction[j] = output_cur[j];\n        }\n    }\n')
-        self.source_file.write('    return 0;\n}')
-
-    def generate_function_header_file(self):
-        
-        self.header_file.write('#ifndef INFERENCE_H_ \n')
-        self.header_file.write('#define INFERENCE_H_ \n\n' )
-
-        self.l_size_max = 1
-        self.l_size_min = np.inf
-        self.nb_weights_max = 1
-        self.nb_biases_max = 1
-        self.nb_files = 0
-
-        for layer in self.layers:
-            
-            layer.write_to_function_header_file(self.version, self.header_file)
-            
-            if layer.size > self.l_size_max : self.l_size_max = layer.size
-            if layer.size < self.l_size_min : self.l_size_min = layer.size         
-            if hasattr(layer, 'weights'): 
-                self.nb_files += 1  
-                if layer.nb_weights > self.nb_weights_max : self.nb_weights_max = layer.nb_weights
-                if layer.nb_biases > self.nb_biases_max : self.nb_biases_max = layer.nb_biases
-            
-            
-        self.header_file.write( '#define nb_layers ' + str(len(self.layers)) + '\n')
-        self.header_file.write('#define nb_params_max 14 \n')
-        self.header_file.write('#define l_size_max ' + str(self.l_size_max) + '\n')
-        self.header_file.write('struct layer\n{\n')
-        self.header_file.write('    int (*layer_type)(int, '+ self.data_type +'*, '+ self.data_type +'*);\n')
-        self.header_file.write('    int layer_size;\n')
-        self.header_file.write('    int pad_right;\n')
-        self.header_file.write('    int pad_left;\n')
-        self.header_file.write('    int pad_bottom;\n')
-        self.header_file.write('    int pad_top;\n')
-        self.header_file.write('    int strides;\n')
-        self.header_file.write('    int pool_size;\n')
-        self.header_file.write('    int kernel_size;\n')
-        self.header_file.write('    int dilation_rate;\n')
-        self.header_file.write('    int nb_filters;\n')
-        self.header_file.write('    int input_channels;\n')
-        self.header_file.write('    int input_height;\n')
-        self.header_file.write('    int input_width;\n')
-        self.header_file.write('    int output_height;\n')
-        self.header_file.write('    int output_width;\n')
-        self.header_file.write('    '+ self.data_type + ' *weights;\n')
-        self.header_file.write('    '+ self.data_type + ' *biases;\n')
-        self.header_file.write('    '+ self.data_type + ' (*actv_function)('+ self.data_type +');\n};\n')
-        self.header_file.write('\n')
-
-        self.header_file.write('struct layer net[nb_layers];\n\n')
-        self.header_file.write('int inference('+ self.data_type +' *prediction, '+ self.data_type +' *nn_input);\n\n')
-        self.header_file.write('#endif')
-    
-    def generate_globalvars_file(self):
-        self.globalvars_file.write('#include "inference.h" \n')
-        self.globalvars_file.write('#include "layers.h" \n')
-        self.globalvars_file.write('#include "activation_functions.h" \n\n')
-        
-        for layer in self.layers:
-            if hasattr(layer, 'weights'):
-                self.globalvars_file.write(self.data_type + ' weights_' + layer.name + '_' + str("{:02d}".format(layer.idx)) + '[' + str(layer.nb_weights) + '] = ' \
-                                        + self.flatten_array_orderc(layer.weights) + ';\n')
-                self.globalvars_file.write(self.data_type + ' biases_' + layer.name + '_' + str("{:02d}".format(layer.idx)) + '[' + str(layer.nb_biases) + '] = ' \
-                                        + self.flatten_array_orderc(layer.biases) + ';\n\n')
-
-        self.globalvars_file.write('\n')
-        self.globalvars_file.write('struct layer net[nb_layers] = {\n')
-
-        for layer in self.layers:
-            layer.write_to_globalvars_file(self.version, self.data_type, self.globalvars_file)            
-
-        self.globalvars_file.write('};')
-        self.globalvars_file.write('\n')
-    
-    def generate_flowfacts_guide(self, c_files_directory):
-        
-        self.c_files_directory = c_files_directory
-        flowfacts_guide_file = open(self.c_files_directory + '/ff_guide.json' , "w+") 
-
-        flowfacts_guide = {}
-
-        flowfacts_guide['functions'] = []
-
-        inference_function = {}
-        inference_function['name'] = 'Inference'
-        inference_function['inner'] = []
-        
-        inference_function['inner'].append({})
-        inference_function['inner'][0]['type'] = 'for loop'
-        inference_function['inner'][0]['variable'] = 'i'
-        inference_function['inner'][0]['bound'] = 'nb_layers - 1'
-        inference_function['inner'][0]['start'] = 1
-        inference_function['inner'][0]['end'] = len(self.layers) - 1
-
-        inference_function['inner'][0]['inner'] = []
-        inference_function['inner'][0]['inner'].append({})
-        inference_function['inner'][0]['inner'][0]['type'] = 'for loop'
-        inference_function['inner'][0]['inner'][0]['variable'] = 'j'
-        inference_function['inner'][0]['inner'][0]['bound_sup'] = 'l_size_max'
-        inference_function['inner'][0]['inner'][0]['bound_min'] = 'l_size_min'
-        inference_function['inner'][0]['inner'][0]['start'] = 0
-        inference_function['inner'][0]['inner'][0]['end'] = (self.l_size_min -1), (self.l_size_max - 1)
-
-        flowfacts_guide['functions'].append(inference_function)
-
-        for layer in self.layers:
-            flowfacts_guide['functions'].append(layer.generate_flowfacts_dict(self.version))
-
-        json.dump(flowfacts_guide, flowfacts_guide_file, sort_keys=False, indent=4, separators=(',', ': '))
-
 class CodeGenerator_V2(CodeGenerator):
-    def __init__(self, **kwds):
-        super().__init__(**kwds)
-        self.version = 'v2'
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.files_to_gen = ['inference.c', 'inference.h', 'global_vars.c', 'main.c', 'Makefile']
     
     def generate_c_files(self, c_files_directory):  
@@ -569,16 +401,24 @@ class CodeGenerator_V2(CodeGenerator):
         self.source_file.write('#include "inference.h"\n\n')
 
         self.source_file.write('int inference(' + self.data_type + ' prediction[' + str(self.layers[-1].size) + '], ' + self.data_type + ' nn_input[' + str(self.layers[0].size) + '])\n{\n')
-        self.source_file.write('    static ' + self.data_type + ' output_pre[' + str(self.l_size_max) + '];\n')
-        self.source_file.write('    static ' + self.data_type + ' output_cur[' + str(self.l_size_max) + '];\n')
-        self.source_file.write('    ' + self.data_type + ' dotproduct;\n')
-        self.source_file.write('    ' + self.data_type + ' sum;\n')
-        self.source_file.write('    ' + self.data_type + ' max;\n')
-        self.source_file.write('    int count;\n\n')
+        # self.source_file.write('    static ' + self.data_type + ' output_cur[' + str(self.l_size_max) + '];\n')
+        # self.source_file.write('    static ' + self.data_type + ' output_pre[' + str(self.l_size_max) + '];\n')
+
+        if any(isinstance(layer, Dense) for layer in self.layers):
+            self.source_file.write('    ' + self.data_type + ' dotproduct;\n')
+        
+        if (any(isinstance(layer, Conv2D_6loops) or any(isinstance(layer, AveragePooling2D))) for layer in self.layers):
+            self.source_file.write('    ' + self.data_type + ' sum;\n')
+        
+        if any(isinstance(layer, MaxPooling2D) for layer in self.layers):
+            self.source_file.write('    ' + self.data_type + ' max;\n')
+               
+        if any(isinstance(layer, AveragePooling2D) for layer in self.layers):
+            self.source_file.write('    int count;\n\n')
 
         for layer in self.layers:
 
-            layer.write_to_function_source_file(self.data_type, self.version, self.source_file)
+            layer.write_to_function_source_file(self.source_file)
             
             if layer.idx > 0:
                 self.source_file.write('    for (int k = 0; k < ' + str(layer.size) + '; ++k)\n')
@@ -587,6 +427,11 @@ class CodeGenerator_V2(CodeGenerator):
                     self.source_file.write('        prediction[k] = output_cur[k];\n\n')
                 else:
                     self.source_file.write('        output_pre[k] = output_cur[k];\n\n')
+                 
+                    if isinstance(layer.next_layer[0], Conv2D_std_gemm) or isinstance(layer.next_layer[0], Conv2D_indirect_gemm):
+                        self.source_file.write('    for (int k = 0; k < ' + str(self.l_size_max) + '; ++k)\n')
+                        self.source_file.write('        output_cur[k] = 0;\n\n')
+            
             
         self.source_file.write('    return 0;\n}')
 
@@ -598,10 +443,27 @@ class CodeGenerator_V2(CodeGenerator):
         self.nb_weights_max = 1
         self.nb_biases_max = 1
 
+        self.patches_size_max = 1
+        for layer in self.layers: 
+            if isinstance(layer, Conv2D_std_gemm):
+                if layer.patches_size > self.patches_size_max : self.patches_size_max = layer.patches_size
+
+        if any(isinstance(layer, Conv2D_std_gemm) for layer in self.layers):             
+            self.header_file.write(self.data_type + ' output_pre[' + str(self.patches_size_max) + '];\n')
+            self.header_file.write(self.data_type + ' output_cur[' + str(self.patches_size_max) + '];\n')
+        
+        else:
+            self.header_file.write(self.data_type + ' output_pre[' + str(self.l_size_max) + '];\n')
+            self.header_file.write(self.data_type + ' output_cur[' + str(self.l_size_max) + '];\n')
+
         for layer in self.layers:
             if hasattr(layer, 'weights'):
                 self.header_file.write('extern '+ self.data_type + ' weights_' + layer.name + '_' + str("{:02d}".format(layer.idx)) + '[' + str(layer.nb_weights) + '];\n')
                 self.header_file.write('extern '+ self.data_type + ' biases_' + layer.name + '_' + str("{:02d}".format(layer.idx)) + '[' + str(layer.nb_biases) + '];\n')
+                
+                if type(layer) is Conv2D_indirect_gemm:
+                    self.header_file.write('extern '+ self.data_type + ' *ppatches_' + layer.name + '_' + str("{:02d}".format(layer.idx)) + '[' + str(layer.patches_height*layer.patches_width) + '];\n')
+                
                 if layer.nb_weights > self.nb_weights_max : self.nb_weights_max = layer.nb_weights
                 if layer.nb_biases > self.nb_biases_max : self.nb_biases_max = layer.nb_biases
 
@@ -612,90 +474,28 @@ class CodeGenerator_V2(CodeGenerator):
 
         self.globalvars_file.write('#include "inference.h" \n\n')
 
+        if any(isinstance(layer, Conv2D_std_gemm) for layer in self.layers):             
+            self.globalvars_file.write(self.data_type + ' output_pre[' + str(self.patches_size_max) + '];\n')
+            self.globalvars_file.write(self.data_type + ' output_cur[' + str(self.patches_size_max) + '];\n')
+        
+        else:
+            self.globalvars_file.write(self.data_type + ' output_pre[' + str(self.l_size_max) + '];\n')
+            self.globalvars_file.write(self.data_type + ' output_cur[' + str(self.l_size_max) + '];\n')
+
+        if any(isinstance(layer, Conv2D_indirect_gemm) for layer in self.layers):
+            self.globalvars_file.write(self.data_type + ' zero = 0.0f;\n\n')
+
+
+
         for layer in self.layers:
                 if hasattr(layer, 'weights'):
                     self.globalvars_file.write(self.data_type + ' weights_' + layer.name + '_' + str("{:02d}".format(layer.idx)) + '[' + str(layer.nb_weights) + '] = ' \
-                                            + self.flatten_array_orderc(layer.weights) + ';\n')
+                                            + self.flatten_array_hybrid(layer.weights) + ';\n')
                     self.globalvars_file.write(self.data_type + ' biases_' + layer.name + '_' + str("{:02d}".format(layer.idx)) + '[' + str(layer.nb_biases) + '] = ' \
                                             + self.flatten_array_orderc(layer.biases) + ';\n\n')
+                    
+                    if type(layer) is Conv2D_indirect_gemm:
+                        self.globalvars_file.write(self.data_type + ' *ppatches_' + layer.name + '_' + str("{:02d}".format(layer.idx)) + '[' + str(layer.patches_height*layer.patches_width) + '] = ' \
+                                            + layer.create_ppatches() + ';\n\n')
+
     
-class CodeGenerator_V3(CodeGenerator_V2):
-    
-    def __init__(self, **kwds):
-        super().__init__(**kwds)
-        self.version = 'v3'
-        self.files_to_gen = ['inference.h', 'main.c', 'Makefile', 'test_dataset.h', 'test_dataset.c']
-
-    def generate_c_files(self, c_files_directory):  
-
-        self.c_files_directory = c_files_directory
-
-        self.files_to_gen.append('inference.c')
-        
-        q = 0
-        for file in self.files_to_gen:
-            filename = Path(os.path.join(self.c_files_directory, file))
-
-            if filename.is_file():
-                print("ERROR : " + file + " already exists !")
-                q += 1
-            
-        if q != 0 : exit()
-        
-        else:                               
-            self.header_file = open(self.c_files_directory + '/inference.h' , "a+")
-            self.main_file = open(self.c_files_directory + '/main.c' , "a+")
-            self.makefile = open(self.c_files_directory + '/Makefile' , "a+")
-            self.source_file = open(c_files_directory + '/inference.c' , "a+")
-
-        self.generate_function_source_file()
-        print('Generated function source file.') 
-        self.generate_function_header_file()
-        print('Generated function header file.') 
-        self.generate_main_file()
-        print('Generated main file.')
-        self.generate_makefile()
-        print('Generated Makefile.')
-        self.generate_testdataset_files()
-        print('Generated testdataset files.')
-
-    def generate_function_source_file(self):
-        
-        self.l_size_max = 1
-        for layer in (self.layers):
-            if layer.size > self.l_size_max : self.l_size_max = layer.size            
-
-        self.source_file.write('#include <stdio.h>\n')
-        self.source_file.write('#include <math.h>\n')
-        self.source_file.write('#include "inference.h"\n\n')
-
-        self.source_file.write('int inference(' + self.data_type + ' prediction[' + str(self.layers[-1].size) + '], ' + self.data_type + ' nn_input[' + str(self.layers[0].size) + '])\n{\n')
-        self.source_file.write('    static ' + self.data_type + ' output_pre[' + str(self.l_size_max) + '];\n')
-        self.source_file.write('    static ' + self.data_type + ' output_cur[' + str(self.l_size_max) + '];\n')
-        self.source_file.write('    ' + self.data_type + ' dotproduct;\n')
-        self.source_file.write('    ' + self.data_type + ' sum;\n')
-        self.source_file.write('    ' + self.data_type + ' max;\n')
-        self.source_file.write('    int count;\n\n')
-
-        for layer in self.layers:                           
-            layer.write_to_function_source_file(self.data_type, self.version, self.source_file)
-
-            if layer.idx > 0:
-                for k in range(layer.size):
-                                       
-                    if layer.idx == len(self.layers)-1:
-                        self.source_file.write('    prediction['+str(k)+'] = output_cur['+str(k)+'];\n')
-                    else:
-                        self.source_file.write('    output_pre['+str(k)+'] = output_cur['+str(k)+'];\n')
-                        
-                self.source_file.write('\n')
-            
-        self.source_file.write('\n    return 0;\n}')
-
-    def generate_function_header_file(self):
-
-        self.header_file.write('#ifndef INFERENCE_H_ \n')
-        self.header_file.write('#define INFERENCE_H_ \n\n')
-
-        self.header_file.write('int inference('+ self.data_type +' *prediction, '+ self.data_type +' *nn_input);\n\n')
-        self.header_file.write('#endif')
