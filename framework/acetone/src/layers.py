@@ -18,6 +18,7 @@
  ******************************************************************************
 """
 
+from re import M
 import numpy as np
 from abc import ABC, abstractmethod
 
@@ -37,35 +38,9 @@ class Layers(ABC):
         super().__init__()
 
     @abstractmethod
-    def write_to_layer_c_files(self):
-        pass
-
-    @abstractmethod
     def feedforward(self):
         pass
 
-    def flatten_array_orderc(self, array):
-    
-        flattened_aray = array.flatten(order='C')
-        s = '\n        {'
-        for i in range(flattened_aray.size):
-            s += str(flattened_aray[i])+', '
-        s = s[:-2]
-        s+='}'
-        
-        return s
-    
-    def flatten_array_orderf(self, array):
-    
-        flattened_aray = array.flatten(order='F')
-        s = '\n        {'
-        for i in range(flattened_aray.size):
-            s += str(flattened_aray[i])+', '
-        s = s[:-2]
-        s+='}'
-        
-        return s
-    
     def flatten_array_hybrid(self, array):
         ndim = array.ndim
         array = array.reshape(-1, *array.shape[-(ndim-2):])
@@ -84,12 +59,12 @@ class Layers(ABC):
         for dim in np.shape(array) : nb_elements *= dim
         return nb_elements
 
-    def compute_padding(self, in_height, in_width, kernel_size, strides, dilation_rate=1):
+    def compute_padding(self, in_height, in_width, kernel_h, kernel_w, strides, dilation_rate=1):
         
         # Compute 'same' padding tensorflow
 
-        filter_height = (kernel_size - (kernel_size-1)*(dilation_rate-1))
-        filter_width = (kernel_size - (kernel_size-1)*(dilation_rate-1))
+        filter_height = (kernel_h - (kernel_h-1)*(dilation_rate-1))
+        filter_width = (kernel_w - (kernel_w-1)*(dilation_rate-1))
 
         # The total padding applied along the height and width is computed as:
 
@@ -108,62 +83,7 @@ class Layers(ABC):
         pad_right = pad_along_width - pad_left
 
         return pad_right, pad_left, pad_bottom, pad_top
-
-    def create_dicts(self, list_of_dicts, list_of_values_loops):
-        
-        keys = ['type', 'variable', 'bound', 'start', 'end', 'inner']
-        
-        function = {}
-        function['name'] = self.name
-        function['inner'] = []
-
-        for dict, values_loop in zip(list_of_dicts, list_of_values_loops):
-            for key, value in zip(keys, values_loop):
-                dict[key] = value 
-
-        list_of_dicts.insert(0, function)
-
-        return list_of_dicts
-        
-    def append_dicts(self, list_of_dicts):
-        
-        for i in range(0, len(list_of_dicts)-1):
-            if 'inner' in list_of_dicts[i].keys():    
-                list_of_dicts[i]['inner'].append(list_of_dicts[i+1])
-            else:
-                list_of_dicts[0]['inner'].append(list_of_dicts[i+1])
-
-        function_dict = list_of_dicts[0]
-
-        return function_dict
-
-    def generate_flowfacts_dict(self):
-
-        if self.version == 'v1_small_nets' or self.version == 'v1_large_nets' or self.version == 'v1_2':
-            
-            keys = ['type', 'variable', 'bound', 'start', 'end', 'inner']
-            
-            function = {}
-            function['name'] = self.name
-            function['inner'] = []
-
-            # Create dictionary for each loop present in function
-            for dict, values_loop in zip(self.list_of_dicts, self.list_of_values_loops):
-                for key, value in zip(keys, values_loop):
-                    dict[key] = value 
-
-            self.list_of_dicts.insert(0, function)
-
-            for i in range(0, len(self.list_of_dicts)-1):
-                if 'inner' in self.list_of_dicts[i].keys():    
-                    self.list_of_dicts[i]['inner'].append(self.list_of_dicts[i+1])
-                else:
-                    self.list_of_dicts[0]['inner'].append(self.list_of_dicts[i+1])
-
-            function_dict = self.list_of_dicts[0]
-
-            return function_dict
-
+       
 class InputLayer(Layers):
 
     def __init__(self, idx, size):
@@ -173,81 +93,15 @@ class InputLayer(Layers):
         self.size = size
         self.name = 'Input_layer'
 
-    def write_to_layer_c_files(self, data_type, version, layers_source_file, layers_header_file):
-
-        if version == 'v1':
-            layers_source_file.write('int Input_layer(int layer_idx, ' + data_type + ' *input, '+ data_type + ' *output) \n{ \n')
-            layers_source_file.write('    for (int i = 0; i < net[layer_idx].layer_size; ++i) \n    { \n')
-            layers_source_file.write('        output[i] = input[i]; \n    } \n\n')
-            layers_source_file.write('    return 0; \n} \n\n')
-            
-            layers_header_file.write('int Input_layer(int layer_idx, ' + data_type + ' *input, ' + data_type + ' *output);\n')
-
-    def write_to_function_source_file(self, data_type, version, source_file):
+    def write_to_function_source_file(self, source_file):
         
-        if version == 'v2':
-            source_file.write(  '    // ' + self.name + '_' + str(self.idx) + '\n')
-            source_file.write( '    for (int i = 0; i < ' + str(self.size) + '; ++i) \n    { \n')
-            source_file.write( '        output_pre[i] = nn_input[i]; \n    } \n\n')
-
-        elif version == 'v3':
-            source_file.write(  '    // ' + self.name + '_' + str(self.idx) + '\n\n')
-
-        else:
-            pass
-
-    def write_to_function_header_file(self, version, header_file):
-        
-        if version == 'v1':
-            header_file.write('#define l0_size ' + str(self.size) + '\n\n')
-
-        return    
-
-    def write_to_globalvars_file(self, version, data_type, globalvars_file):
-        
-        if version == 'v1':
-            
-            globalvars_file.write('    [0] = {\n')
-            globalvars_file.write('        .layer_type = Input_layer,\n')
-            globalvars_file.write('        .layer_size = l'+str(self.idx)+'_size,\n')
-            globalvars_file.write('        .pad_right = 0x0,\n')
-            globalvars_file.write('        .pad_left = 0x0,\n')
-            globalvars_file.write('        .pad_bottom = 0x0,\n')
-            globalvars_file.write('        .pad_top = 0x0,\n')
-            globalvars_file.write('        .strides = 0x0,\n')
-            globalvars_file.write('        .pool_size = 0x0,\n')
-            globalvars_file.write('        .kernel_size = 0x0,\n')
-            globalvars_file.write('        .dilation_rate = 0x0,\n')
-            globalvars_file.write('        .nb_filters = 0x0,\n')
-            globalvars_file.write('        .input_height = 0x0,\n')
-            globalvars_file.write('        .input_width = 0x0,\n')
-            globalvars_file.write('        .input_channels = 0x0,\n')
-            globalvars_file.write('        .output_height = 0x0,\n')
-            globalvars_file.write('        .output_width = 0x0,\n')
-            globalvars_file.write('        .weights = 0x0,\n')
-            globalvars_file.write('        .biases = 0x0,\n')
-            globalvars_file.write('        .actv_function = 0x0\n')
-            globalvars_file.write('        },\n')
-
-        return 
+        source_file.write(  '    // ' + self.name + '_' + str(self.idx) + '\n')
+        source_file.write( '    for (int i = 0; i < ' + str(self.size) + '; ++i) \n    { \n')
+        source_file.write( '        output_pre[i] = nn_input[i]; \n    } \n\n')
 
     def feedforward(self, input):
         
         return input 
-
-    def generate_flowfacts_dict(self, version):
-
-        self.version = version
-
-        if self.version == 'v1':
-            
-            values_loop_layer_size = ['for loop', 'i', ('l'+str(self.idx)+'_size'), 0, self.size - 1]  
-            self.list_of_values_loops = [values_loop_layer_size]
-
-            loop_layer_size = {}
-            self.list_of_dicts = [loop_layer_size]
-
-            return Layers.generate_flowfacts_dict(self)
 
 class Dense(Layers):
 
@@ -265,332 +119,527 @@ class Dense(Layers):
         self.nb_weights = self.count_elements_array(self.weights)
         self.nb_biases = self.count_elements_array(self.biases)
 
-    def write_to_layer_c_files(self, data_type, version, layers_source_file, layers_header_file):
-        
-        if version == 'v1':
+    def write_to_function_source_file(self, source_file):
 
+        source_file.write(  '    // ' + self.name + '_' + str(self.idx) + '\n')
+        source_file.write( '    for (int i = 0; i < ' + str(self.size) + '; ++i) \n    { \n')
+        source_file.write( '        dotproduct = 0;\n')
+        source_file.write( '        for (int j = 0; j < ' + str(self.previous_layer[0].size) + '; ++j)\n        {\n')
+        source_file.write( '            dotproduct += output_pre[j] * weights_' + self.name + '_' + str("{:02d}".format(self.idx)) + '[(j + ' + str(self.previous_layer[0].size) + '*i)];\n        }\n')
+        source_file.write( '        dotproduct += biases_' + self.name + '_' + str("{:02d}".format(self.idx)) + '[i];\n')
 
-            layers_source_file.write('int Dense(int layer_idx, ' + data_type + ' *input, '+ data_type + ' *output) \n{ \n')
-            layers_source_file.write('    '+ data_type + ' dotproduct;\n\n')
-            layers_source_file.write('    for (int i = 0; i < net[layer_idx].layer_size; ++i) \n    { \n')
-            layers_source_file.write('        dotproduct = 0;\n')
-            layers_source_file.write('        for (int j = 0; j < net[layer_idx-1].layer_size; ++j)\n        {\n')
-            layers_source_file.write('            dotproduct += input[j] * (net[layer_idx].weights[(j*net[layer_idx].layer_size+i)]);\n        }\n')
-            layers_source_file.write('        dotproduct += net[layer_idx].biases[i];\n')
-            layers_source_file.write('        output[i] = net[layer_idx].actv_function(dotproduct);\n    }\n\n')
-            layers_source_file.write('    return 0; \n} \n\n')
-            
-            layers_header_file.write('int Dense(int layer_idx, ' + data_type + ' *input, '+ data_type + ' *output);\n')
-        
-    def write_to_function_source_file(self, data_type, version, source_file):
+        a = self.activation_function.write_activation_str(self.local_var)
 
-        if version == 'v2':
-            source_file.write(  '    // ' + self.name + '_' + str(self.idx) + '\n')
-            source_file.write( '    for (int i = 0; i < ' + str(self.size) + '; ++i) \n    { \n')
-            source_file.write( '        dotproduct = 0;\n')
-            source_file.write( '        for (int j = 0; j < ' + str(self.previous_layer[0].size) + '; ++j)\n        {\n')
-            source_file.write( '            dotproduct += output_pre[j] * weights_' + self.name + '_' + str("{:02d}".format(self.idx)) + '[(i + ' + str(self.size) + '*j)];\n        }\n')
-            source_file.write( '        dotproduct += biases_' + self.name + '_' + str("{:02d}".format(self.idx)) + '[i];\n')
+        source_file.write( '        output_cur[i] = '+ a +';\n    }\n\n')
 
-            a = self.activation_function.write_activation_str(self.local_var)
-
-            source_file.write( '        output_cur[i] = '+ a +';\n    }\n\n')
-
-        elif version == 'v3':
-            if self.idx == 1: input_of_layer = 'nn_input'
-            else: input_of_layer = 'output_pre'
-
-            source_file.write(  '    // ' + self.name + '_' + str(self.idx) + '\n')
-            for i in range(self.size):
-                source_file.write( '    dotproduct = 0;\n')
-                for j in range(self.previous_layer[0].size):
-                    source_file.write( '    dotproduct += ' +input_of_layer+ '['+str(j)+'] * '+ str(self.weights.flatten()[i+self.size*j]) +';\n')
-                source_file.write( '    dotproduct += '+ str(self.biases.flatten()[i]) +';\n')
-                
-                a = self.activation_function.write_activation_str(self.local_var)
-
-                source_file.write( '    output_cur['+str(i)+'] = '+ a +';\n\n')
-            
-        else:
-            pass  
-
-    def write_to_function_header_file(self, version, header_file):
-        
-        if version == 'v1':
-            header_file.write('#define l'+str(self.idx)+'_size ' + str(self.size) + '\n\n')
-
-        else:
-            pass
-
-    def write_to_globalvars_file(self, version, data_type, globalvars_file):
-      
-        if version == 'v1':
-
-            globalvars_file.write('    ['+str(self.idx)+'] = {\n' )
-            globalvars_file.write('        .layer_type = Dense,\n')
-            globalvars_file.write('        .layer_size = l'+str(self.idx)+'_size,\n')
-            globalvars_file.write('        .pad_right = 0x0,\n')
-            globalvars_file.write('        .pad_left = 0x0,\n')
-            globalvars_file.write('        .pad_bottom = 0x0,\n')
-            globalvars_file.write('        .pad_top = 0x0,\n')
-            globalvars_file.write('        .strides = 0x0,\n')
-            globalvars_file.write('        .pool_size = 0x0,\n')
-            globalvars_file.write('        .kernel_size = 0x0,\n')
-            globalvars_file.write('        .dilation_rate = 0x0,\n')
-            globalvars_file.write('        .nb_filters = 0x0,\n')
-            globalvars_file.write('        .input_height = 0x0,\n')
-            globalvars_file.write('        .input_width = 0x0,\n')
-            globalvars_file.write('        .input_channels = 0x0,\n')
-            globalvars_file.write('        .output_height = 0x0,\n')
-            globalvars_file.write('        .output_width = 0x0,\n')
-            globalvars_file.write('        .weights = weights_'+ self.name + '_' + str("{:02d}".format(self.idx)) + ',\n')
-            globalvars_file.write('        .biases = biases_'+ self.name + '_' + str("{:02d}".format(self.idx)) + ',\n')
-            globalvars_file.write('        .actv_function =  '+ (self.activation_function).name +',\n        },\n')
-  
     def feedforward(self, input):
 
         input = input.reshape((self.previous_layer[0]).size) 
 
         return self.activation_function.compute((np.dot(input, self.weights) + self.biases))
-
-    def generate_flowfacts_dict(self, version):
-        
-        self.version = version
-
-        if self.version == 'v1':
-            
-        
-            values_loop_layer_size = ['for loop', 'i', ('l'+str(self.idx)+'_size'), 0, (self.size - 1), []]
-            values_loop_previous_layer_size = ['for loop', 'j', ('l'+str(self.idx - 1)+'_size'), 0, (self.previous_layer[0].size - 1)]
-
-            self.list_of_values_loops = [values_loop_layer_size, values_loop_previous_layer_size]
-
-            loop_layer_size = {}
-            loop_previous_layer_size = {}
-            
-            self.list_of_dicts = [loop_layer_size, loop_previous_layer_size]
-
-            return Layers.generate_flowfacts_dict(self)
-      
+     
 class Conv2D(Layers):
     
-    def __init__(self, idx, size, padding, strides, kernel_size, dilation_rate, nb_filters, input_shape, output_shape, weights, biases, activation_function):
+    def __init__(self, idx, conv_algorithm, data_format, size, padding, strides, kernel_h, kernel_w, dilation_rate, nb_filters, input_shape, output_shape, weights, biases, activation_function):
         
         super().__init__()
+        self.conv_algorithm = conv_algorithm
         self.idx = idx
+        self.data_format = data_format
         self.size = size
         self.name = 'Conv2D'
         self.padding = padding
         self.strides = strides
-        self.kernel_size = kernel_size
+        self.kernel_h = kernel_h
+        self.kernel_w = kernel_w
         self.dilation_rate = dilation_rate
         self.nb_filters = nb_filters
-        self.input_height = input_shape[1]
-        self.input_width = input_shape[2]
-        self.input_channels = input_shape[3]
-        self.output_height = output_shape[1]
-        self.output_width = output_shape[2]
 
         self.weights = np.asarray(weights)
         self.biases = np.asarray(biases)
         self.activation_function = activation_function
         self.local_var = 'sum'
 
+        if self.data_format == 'channels_first':
+            self.input_channels = input_shape[1]
+            self.input_height = input_shape[2]
+            self.input_width = input_shape[3]
+            self.output_height = output_shape[2]
+            self.output_width = output_shape[3]
+            self.weights_py_inf = np.moveaxis(self.weights, 2, 0)
+
+
+        elif self.data_format == 'channels_last':
+            self.input_height = input_shape[1]
+            self.input_width = input_shape[2]
+            self.input_channels = input_shape[3]
+            self.output_height = output_shape[1]
+            self.output_width = output_shape[2]
+
+
         self.nb_weights = self.count_elements_array(self.weights)
         self.nb_biases = self.count_elements_array(self.biases)
 
         if self.padding == 'same':
-            self.pad_right, self.pad_left, self.pad_bottom, self.pad_top = self.compute_padding(self.input_height, self.input_width, self.kernel_size, self.strides, self.dilation_rate)
+            self.pad_right, self.pad_left, self.pad_bottom, self.pad_top = self.compute_padding(self.input_height, self.input_width, self.kernel_h, self.kernel_w, self.strides, self.dilation_rate)
         else:
             self.pad_right, self.pad_left, self.pad_bottom, self.pad_top = 0, 0, 0, 0
 
-    def write_to_layer_c_files(self, data_type, version, layers_source_file, layers_header_file):
+    @abstractmethod
+    def write_to_function_source_file(self, source_file):
+        pass
 
-        if version == 'v1':
-            
-            layers_source_file.write('int Conv2D(int layer_idx, ' + data_type + ' *input, '+ data_type + ' *output) \n{ \n')
-            layers_source_file.write('    '+ data_type + ' sum;\n\n')
-            layers_source_file.write('    for (int f = 0; f < net[layer_idx].nb_filters; ++f)\n    {\n')
-            layers_source_file.write('        for (int i = 0; i < net[layer_idx].output_height; ++i)\n        {\n')
-            layers_source_file.write('            for (int j = 0; j < net[layer_idx].output_width; ++j)\n            {\n')
-            layers_source_file.write('                sum = 0;\n')
-            layers_source_file.write('                for (int c = 0; c < net[layer_idx].input_channels; ++c)\n                {\n')
-            layers_source_file.write('                    for (int m = 0; m < net[layer_idx].kernel_size; ++m)\n                    {\n')
-            layers_source_file.write('                        for (int n = 0; n < net[layer_idx].kernel_size; ++n)\n                        {\n')
-            layers_source_file.write('                            int ii = i*net[layer_idx].strides + m*net[layer_idx].dilation_rate - net[layer_idx].pad_left;\n')
-            layers_source_file.write('                            int jj = j*net[layer_idx].strides + n*net[layer_idx].dilation_rate - net[layer_idx].pad_top;\n\n')
-            layers_source_file.write('                            if (ii >= 0 && ii < net[layer_idx].input_height && jj >= 0 && jj < net[layer_idx].input_width)\n                            {\n')
-            layers_source_file.write('                                sum += input[(ii*net[layer_idx].input_width + jj)*net[layer_idx].input_channels + c] * net[layer_idx].weights[((m*net[layer_idx].kernel_size + n)*net[layer_idx].input_channels + c)*net[layer_idx].nb_filters + f];\n'  )
-            layers_source_file.write('                            }\n                        }\n                    }\n                }\n')
-            layers_source_file.write('                sum += net[layer_idx].biases[f];\n'            )
-            layers_source_file.write('                output[(i*net[layer_idx].output_width + j)*net[layer_idx].nb_filters + f] = net[layer_idx].actv_function(sum);\n')
-            layers_source_file.write('            }\n        }\n    }\n\n    return 0;\n}\n\n')
-
-            layers_header_file.write('int Conv2D(int layer_idx, ' + data_type + ' *input, '+ data_type + ' *output);\n')
-
-    def write_to_function_source_file(self, data_type, version, source_file):
-         
-        if version == 'v2':
-            source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
-            source_file.write('    for (int f = 0; f < ' + str(self.nb_filters) + '; ++f)\n    {\n')
-            source_file.write('        for (int i = 0; i < '+str(self.output_height)+'; ++i)\n        {\n')
-            source_file.write('            for (int j = 0; j < '+str(self.output_width)+'; ++j)\n            {\n')
-            source_file.write('                sum = 0;\n')
-            source_file.write('                for (int c = 0; c < '+str(self.input_channels)+'; ++c)\n                {\n')
-            source_file.write('                    for (int m = 0; m < '+str(self.kernel_size)+'; ++m)\n                    {\n')
-            source_file.write('                        for (int n = 0; n < '+str(self.kernel_size)+'; ++n)\n                        {\n')
-            source_file.write('                            int ii = i*'+str(self.strides)+' + m*'+str(self.dilation_rate)+' - '+str(self.pad_left)+';\n')
-            source_file.write('                            int jj = j*'+str(self.strides)+' + n*'+str(self.dilation_rate)+' - '+str(self.pad_top)+';\n\n')
-            source_file.write('                            if (ii >= 0 && ii < '+str(self.input_height)+' && jj >= 0 && jj < '+str(self.input_width)+')\n                            {\n')
-
-            source_file.write('                                sum += output_pre[(ii*'+str(self.input_width)+' + jj)*'+str(self.input_channels)+' + c] * weights_' + self.name + '_' + str("{:02d}".format(self.idx)) + '[((m*'+str(self.kernel_size)+' + n)*'+str(self.input_channels)+' + c)*'+str(self.nb_filters)+' + f];\n'  )
-         
-            source_file.write('                            }\n                        }\n                    }\n                }\n')
-            source_file.write('                sum += biases_' + self.name + '_' + str("{:02d}".format(self.idx)) + '[f];\n'            )
-            
-            a = self.activation_function.write_activation_str(self.local_var)
-                       
-            source_file.write('                output_cur[(i*'+str(self.output_width)+' + j)*'+str(self.nb_filters)+' + f] = '+ a +';\n')
-            source_file.write('            }\n        }\n    }\n\n')
-            
-        elif version == 'v3':
-            
-            if self.idx == 1: input_of_layer = 'nn_input'
-            else: input_of_layer = 'output_pre'
-
-            source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
-            for f in range(self.nb_filters):
-                for i in range(self.output_height):
-                    for j in range(self.output_width):
-                        source_file.write('    sum = 0;\n' )
-                        s = '' # string to store sum
-                        for c in range(self.input_channels):
-                            for m in range(self.kernel_size):
-                                for n in range(self.kernel_size):
-                                    ii = i*self.strides + m*self.dilation_rate - self.pad_left
-                                    jj = j*self.strides + n*self.dilation_rate - self.pad_top                                
-                                    if ii >= 0 and ii <self.input_height and jj >= 0 and jj < self.input_width :
-                                        
-                                        s += '    sum += ' + input_of_layer + '['+str((ii*self.input_width + jj)*self.input_channels+c)+'] * '+ str((self.weights.flatten())[((m*self.kernel_size + n)*self.input_channels+c)*self.nb_filters + f]) +';\n'
-
-                                    else:
-                                        continue
-
-                        source_file.write(s)
-                        source_file.write('    sum += '+ str((self.biases.flatten())[f]) +';\n'            )
-                        a = self.activation_function.write_activation_str(self.local_var)
-
-                        source_file.write('    output_cur['+str((i*self.output_width+ j)*self.nb_filters+ f)+'] = '+ a +';\n\n')
-
-        else:
-            pass    
-
-    def write_to_function_header_file(self, version, header_file):
-    
-        if version == 'v1':
-            
-            header_file.write('#define l'+str(self.idx)+'_size ' + str(self.size) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_pad_right ' + str(self.pad_right) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_pad_left ' + str(self.pad_left) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_pad_bottom ' + str(self.pad_bottom) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_pad_top ' + str(self.pad_top) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_strides ' + str(self.strides) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_kernel_size ' + str(self.kernel_size) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_dilation_rate ' + str(self.dilation_rate) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_nb_filters ' + str(self.nb_filters) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_input_height ' + str(self.input_height) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_input_width ' + str(self.input_width) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_input_channels ' + str(self.input_channels) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_output_height ' + str(self.output_height) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_output_width ' + str(self.output_width) + '\n\n')
-
-        else:
-            pass
-
-    def write_to_globalvars_file(self, version, data_type, globalvars_file):
-        
-        if version == 'v1':
-            globalvars_file.write('    ['+str(self.idx)+'] = {\n' )
-            globalvars_file.write('        .layer_type = Conv2D,\n')
-            globalvars_file.write('        .layer_size = l'+str(self.idx)+'_size,\n'   )
-            globalvars_file.write('        .pad_right = l'+str(self.idx)+'_pad_right,\n')
-            globalvars_file.write('        .pad_left = l'+str(self.idx)+'_pad_left,\n')
-            globalvars_file.write('        .pad_bottom = l'+str(self.idx)+'_pad_bottom,\n')
-            globalvars_file.write('        .pad_top = l'+str(self.idx)+'_pad_top,\n')
-            globalvars_file.write('        .strides = l'+str(self.idx)+'_strides,\n')
-            globalvars_file.write('        .pool_size = 0x0,\n')
-            globalvars_file.write('        .kernel_size = l'+str(self.idx)+'_kernel_size,\n')
-            globalvars_file.write('        .dilation_rate = l'+str(self.idx)+'_dilation_rate,\n')
-            globalvars_file.write('        .nb_filters = l'+str(self.idx)+'_nb_filters,\n')
-            globalvars_file.write('        .input_height = l'+str(self.idx)+'_input_height,\n')
-            globalvars_file.write('        .input_width = l'+str(self.idx)+'_input_width,\n')
-            globalvars_file.write('        .input_channels = l'+str(self.idx)+'_input_channels,\n')
-            globalvars_file.write('        .output_height = l'+str(self.idx)+'_output_height,\n')
-            globalvars_file.write('        .output_width = l'+str(self.idx)+'_output_width,\n')
-            globalvars_file.write('        .weights = weights_'+ self.name + '_' + str("{:02d}".format(self.idx)) + ',\n')
-            globalvars_file.write('        .biases = biases_'+ self.name + '_' + str("{:02d}".format(self.idx)) + ',\n')
-            globalvars_file.write('        .actv_function =  '+ (self.activation_function).name +',\n        },\n')
-    
     def feedforward(self, input):
+        # Treat input
+        if(self.data_format == 'channels_first'):
+            input = input.reshape(self.input_channels, self.input_height, self.input_width)
         
-        input = input.reshape(self.input_height, self.input_width, self.input_channels)
-        output = np.zeros((self.output_height, self.output_width, self.nb_filters))
+        elif(self.data_format == 'channels_last'):
+            input = input.reshape(self.input_height, self.input_width, self.input_channels)
+            input= np.transpose(input,(2,0,1))
+        
+        # General both for CHW and HWC
+        output = np.zeros((self.nb_filters, self.output_height, self.output_width))
         
         if self.pad_right and self.pad_left and self.pad_top and self.pad_bottom:
-            input_padded = np.zeros((self.input_height + self.pad_top + self.pad_bottom, self.input_width + self.pad_left + self.pad_right, self.input_channels))
-            input_padded[self.pad_top:-self.pad_bottom, self.pad_left:-self.pad_right, :] = input
+            input_padded = np.zeros((self.input_channels, self.input_height + self.pad_top + self.pad_bottom, self.input_width + self.pad_left + self.pad_right))
+            input_padded[:, self.pad_top:-self.pad_bottom, self.pad_left:-self.pad_right] = input
         else:
             input_padded = input
 
         for f in range(self.nb_filters):
-            for j in range(self.output_width): 
-                for i in range(self.output_height):
-                    output[i,j,f]=np.sum(input_padded[i*self.strides:i*self.strides+self.kernel_size, j*self.strides:j*self.strides+self.kernel_size, :] * self.weights[:,:,:,f]) + self.biases[f]
+            for i in range(self.output_height):
+                for j in range(self.output_width): 
+                    output[f,i,j]=np.sum(input_padded[:, i*self.strides:i*self.strides+self.kernel_h, j*self.strides:j*self.strides+self.kernel_w] 
+                                        * self.weights_py_inf[:,:,:,f]) + self.biases[f]
         
+        # If HWC, transpose output
+        if(self.data_format == 'channels_last'):
+            output= np.transpose(output,(1,2,0))
+
         return self.activation_function.compute(output)
 
-    def generate_flowfacts_dict(self, version):
-        
-        self.version = version
+class Conv2D_6loops(Conv2D):
+    """Implements Conv2D using the six-loops algorithm (direc conv)"""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+   
+    def write_to_function_source_file(self, source_file):
+         
+        source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
+        source_file.write('    for (int f = 0; f < ' + str(self.nb_filters) + '; ++f)\n    {\n')
+        source_file.write('        for (int i = 0; i < '+str(self.output_height)+'; ++i)\n        {\n')
+        source_file.write('            for (int j = 0; j < '+str(self.output_width)+'; ++j)\n            {\n')
+        source_file.write('                sum = 0;\n')
+        source_file.write('                for (int c = 0; c < '+str(self.input_channels)+'; ++c)\n                {\n')
+        source_file.write('                    for (int m = 0; m < '+str(self.kernel_h)+'; ++m)\n                    {\n')
+        source_file.write('                        for (int n = 0; n < '+str(self.kernel_w)+'; ++n)\n                        {\n')
+        source_file.write('                            int ii = i*'+str(self.strides)+' + m*'+str(self.dilation_rate)+' - '+str(self.pad_left)+';\n')
+        source_file.write('                            int jj = j*'+str(self.strides)+' + n*'+str(self.dilation_rate)+' - '+str(self.pad_top)+';\n\n')
+        source_file.write('                            if (ii >= 0 && ii < '+str(self.input_height)+' && jj >= 0 && jj < '+str(self.input_width)+')\n                            {\n')
 
-        if self.version == 'v1':
+        source_file.write('                                sum += output_pre[jj + '+str(self.input_width)+'*(ii + '+str(self.input_height)+'*c)] * weights_' + self.name + '_' + str("{:02d}".format(self.idx)) + '[n + '+str(self.kernel_w)+'*(m + '+str(self.kernel_h)+'*(c + '+str(self.input_channels)+'*f))];\n')
+        source_file.write('                            }\n                        }\n                    }\n                }\n')                                            
+        source_file.write('                sum += biases_' + self.name + '_' + str("{:02d}".format(self.idx)) + '[f];\n'            )
+        
+        a = self.activation_function.write_activation_str(self.local_var)
+                    
+        source_file.write('                output_cur[j + '+str(self.output_width)+'*(i + '+str(self.output_height)+'*f)] = '+ a +';\n')
+        source_file.write('            }\n        }\n    }\n\n')
+
+class Conv2D_gemm(Conv2D):
+    """Implements Conv2D using indirect im2col (or im2row) and GeMM"""
+   
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        self.patches_height = self.input_channels * self.kernel_h * self.kernel_w
+        self.patches_width = self.output_height * self.output_width
+        self.patches_size = self.patches_height * self.patches_width
+
+        self.conv_algorithm = self.conv_algorithm[-7:]
+        self.algo_gemm_mapping = { 'gemm_nn' : self.write_gemm_nn,
+                                   'gemm_nt' : self.write_gemm_nt,
+                                   'gemm_tn' : self.write_gemm_tn,
+                                   'gemm_tt' : self.write_gemm_tt}
+
+   
+    @abstractmethod
+    def write_gemm_nn(self, m, n, k, A, B, C):
+        pass
+
+    @abstractmethod
+    def write_gemm_nt(self, m, n, k, A, B, C):
+        pass
+    
+    @abstractmethod
+    def write_gemm_tn(self, m, n, k, A, B, C):
+        pass
+
+    @abstractmethod
+    def write_gemm_tt(self, m, n, k, A, B, C):
+       pass
+
+class Conv2D_indirect_gemm(Conv2D_gemm):
+    """Implements Conv2D using indirect im2col (or im2row) and GeMM"""
+   
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def create_ppatches(self):
+        if (self.pad_right or self.pad_left or self.pad_bottom or self.pad_top):
+            self.input_h_padded = self.input_height + self.pad_top + self.pad_bottom
+            self.input_w_padded = self.input_width + self.pad_left + self.pad_right
+
+            start_idx = np.arange(self.kernel_h)[:,None]*self.input_w_padded + np.arange(self.kernel_w)
+            c=self.input_h_padded*self.input_w_padded*np.arange(self.input_channels)
+            start_idx=(c[:,None]+start_idx.ravel()).reshape((-1,self.kernel_h,self.kernel_w))
+            offset_idx = np.arange(self.output_height, step=self.strides)[:,None]*self.input_w_padded + np.arange(self.output_width, step=self.strides)
+            idx_padded_input = (start_idx.ravel()[:,None] + offset_idx.ravel()).flatten()
+
+            idx_of_zeros = []
+            j_zeros = np.concatenate((np.arange(self.pad_left), np.arange(self.pad_right)+(self.input_w_padded-self.pad_right)))
+            i_zeros = np.concatenate((np.arange(self.pad_top), np.arange(self.pad_bottom)+(self.input_h_padded-self.pad_bottom)))
+            for c in range(self.input_channels):
+                for i in range(self.input_h_padded):
+                    for j in range(self.input_w_padded):
+                        if (np.isin(i, i_zeros) or np.isin(j, j_zeros)):
+                            idx_of_zeros.append(j + self.input_w_padded*(i+self.input_h_padded*c))
             
-        
-            values_loop_filters = ['for loop', 'f', 'nb_filters', 0, (self.nb_filters - 1), []]
-            values_loop_output_height = ['for loop', 'i', 'output_height', 0, (self.output_height - 1), []]
-            values_loop_output_width = ['for loop', 'j', 'output_width', 0, (self.output_width - 1), []]
-            values_loop_input_channels = ['for loop', 'c', 'input_channels', 0, (self.input_channels - 1), []]
-            values_loop_kernel_size_1 = ['for loop', 'm', 'kernel_size', 0, (self.kernel_size - 1), []]
-            values_loop_kernel_size_2 = ['for loop', 'n', 'kernel_size', 0, (self.kernel_size - 1)]
+            idx_padded_input = np.where(np.isin(idx_padded_input, idx_of_zeros), np.nan, idx_padded_input)
+            _, idx_padded_input = np.unique(idx_padded_input, return_inverse=True) 
+            self.ppatches=np.where(idx_padded_input==self.input_shape, np.nan, idx_padded_input)
 
-            self.list_of_values_loops = [values_loop_filters, values_loop_output_height, values_loop_output_width, values_loop_input_channels, values_loop_kernel_size_1, values_loop_kernel_size_2]
-
-            loop_filters = {}
-            loop_output_height = {}
-            loop_output_width = {}
-            loop_input_channels = {}
-            loop_kernel_size_1 = {}
-            loop_kernel_size_2 = {}
-                
-            self.list_of_dicts = [loop_filters, loop_output_height, loop_output_width, loop_input_channels, loop_kernel_size_1, loop_kernel_size_2]
+        else:
+            start_idx = np.arange(self.kernel_h)[:,None]*self.input_width + np.arange(self.kernel_w)
+            c=self.input_height*self.input_width*np.arange(self.input_channels)
+            start_idx=(c[:,None]+start_idx.ravel()).reshape((-1,self.kernel_h,self.kernel_w))
+            offset_idx = np.arange(self.output_height, step=self.strides)[:,None]*self.input_width + np.arange(self.output_width, step=self.strides)
+            self.ppatches = (start_idx.ravel()[:,None] + offset_idx.ravel()).flatten()
             
-            return Layers.generate_flowfacts_dict(self)
+        if ('gemm_nt' or 'gemm_tt') in self.conv_algorithm:
+            self.ppatches = self.ppatches.reshape((self.patches_height, self.patches_width)).transpose().flatten()  
+  
+
+        s = '\n        {'
+        for i in range(len(self.ppatches)):
+            if np.isnan(self.ppatches[i]):
+                s += '&zero, '
+            else:
+                s += '&output_pre[' + str(int(self.ppatches[i])) + '], '
+
+        s=s[:-2]
+        s+='}'
+
+        return s
+
+    def write_gemm_nn(self, m, n, k, A, B, C, ):
+
+        self.m = m
+        self.n = n
+        self.k = k
+        self.A = A
+        self.ldA = k
+        self.B = B
+        self.ldB = n
+        self.C = C
+        self.ldC = n
+        a = self.activation_function.write_activation_str('output')
+
+        s = '    // gemm_nn\n'
+        s+= '    for (int i=0; i<'+str(self.m)+'; i++){\n'
+        s+= '        for (int p=0; p<'+str(self.k)+'; ++p){\n'
+        s+= '            float register weight = '+str(self.A)+'[i*'+str(self.ldA)+'+p];\n'
+        s+= '            for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '                '+str(self.C)+'[i*'+str(self.ldC)+' + j] += weight * *('+str(self.B)+'[p*'+str(self.ldB)+' + j]);\n'
+        s+= '            }\n'
+        s+= '        }\n'
+        s+= '        for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '            float register output = ' +str(self.C)+'[i*'+str(self.ldC)+' + j];\n'
+        s+= '            output += biases_' + self.name + '_' + str('{:02d}'.format(self.idx))+'[i];\n'
+        s+= '            '+str(self.C)+'[i*'+str(self.ldC)+' + j] = '+a+';\n'
+        s+= '        }\n'
+        s+= '    }\n\n'
         
+        return s
+    
+    def write_gemm_nt(self, m, n, k, A, B, C):
+
+        self.m = m
+        self.n = n
+        self.k = k
+        self.A = A
+        self.ldA = k
+        self.B = B
+        self.ldB = k
+        self.C = C
+        self.ldC = n
+        a = self.activation_function.write_activation_str('output')
+
+        s = '    // gemm_nt\n'
+        s+= '    for (int i=0; i<'+str(self.m)+'; i++){\n'
+        s+= '       for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '           float register output = 0;\n'
+        s+= '           for (int p=0; p<'+str(self.k)+'; ++p){\n'
+        s+= '               output += '+str(self.A)+'[i*'+str(self.ldA)+'+p] * *('+str(self.B)+'[j*'+str(self.ldB)+' + p]);\n'
+        s+= '           }\n'
+        s+= '           output += biases_'+ self.name + '_' + str("{:02d}".format(self.idx))+'[i];\n'
+        s+= '           '+str(self.C)+'[i*'+str(self.ldC)+' + j] = '+a+';\n'
+        s+= '       }\n'
+        s+= '    }\n\n'
+        
+        return s
+
+    def write_gemm_tn(self, m, n, k, A, B, C):
+
+        self.m = m
+        self.n = n
+        self.k = k
+        self.A = A
+        self.ldA = m
+        self.B = B
+        self.ldB = n
+        self.C = C
+        self.ldC = n
+
+        s = '    // gemm_tn\n'
+        s+= '    for (int i=0; i<'+str(self.m)+'; i++){\n'
+        s+= '       for (int p=0; p<'+str(self.k)+'; ++p){\n'
+        s+= '           float register weight = '+str(self.A)+'[p*'+str(self.ldA)+'+i];\n'
+        s+= '           for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '               '+str(self.C)+'[i*'+str(self.ldC)+' + j] += weight * *('+str(self.B)+'[p*'+str(self.ldB)+' + j]);\n'
+        s+= '           }\n'
+        s+= '       }\n'
+        s+= '    }\n\n'
+        
+        return s
+
+    def write_gemm_tt(self, m, n, k, A, B, C):
+
+        self.m = m
+        self.n = n
+        self.k = k
+        self.A = A
+        self.ldA = m
+        self.B = B
+        self.ldB = k
+        self.C = C
+        self.ldC = n
+
+        s = '    // gemm_tt\n'
+        s+= '    for (int i=0; i<'+str(self.m)+'; i++){\n'
+        s+= '       for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '           float register sum = 0;\n'
+        s+= '           for (int p=0; p<'+str(self.k)+'; ++p){\n'
+        s+= '               sum += '+str(self.A)+'[p*'+str(self.ldA)+'+i] * *('+str(self.B)+'[j*'+str(self.ldB)+' + p]);\n'
+        s+= '           }\n'
+        s+= '           '+str(self.C)+'[i*'+str(self.ldC)+' + j] += sum;\n'
+        s+= '       }\n'
+        s+= '    }\n\n'
+        
+        return s
+
+    def write_to_function_source_file(self, source_file):
+        
+        source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')   
+        gemm_code = self.algo_gemm_mapping[self.conv_algorithm](self.nb_filters, self.patches_width, self.patches_height, 'weights_' + self.name + '_' + str("{:02d}".format(self.idx)), 'ppatches_' + self.name + '_' + str("{:02d}".format(self.idx)), "output_cur")
+        source_file.write(gemm_code)
+        
+        return 0
+
+class Conv2D_std_gemm(Conv2D_gemm):
+    """Implements Conv2D using im2col (or im2row) and GeMM"""
+   
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        self.algo_patch_building_mapping = { 'gemm_nn' : self.write_im2col,
+                                             'gemm_nt' : self.write_im2row,
+                                             'gemm_tn' : self.write_im2col,
+                                             'gemm_tt' : self.write_im2row}
+
+    def write_im2col(self):
+        s = '    // im2col\n'
+        s+= '    for (int i = 0; i < '+str(self.patches_height)+'; ++i) {\n\n'
+        s+= '        int i_offset = (i / '+str(self.kernel_w)+') % '+str(self.kernel_h)+';\n'
+        s+= '        int j_offset = i % '+str(self.kernel_w)+';\n'
+        s+= '        int c_offset = i / '+str(self.kernel_h)+' / '+str(self.kernel_w)+';\n\n'
+        s+= '        for (int h = 0; h < '+str(self.output_height)+'; ++h) {\n'
+        s+= '            for (int w = 0; w < '+str(self.output_width)+'; ++w) {\n\n'
+        s+= '                int ii = h * '+str(self.strides)+' - '+str(self.pad_top)+' + i_offset; \n'
+        s+= '                int jj = w * '+str(self.strides)+' - '+str(self.pad_left)+' + j_offset;\n\n'
+        s+= '                int j = h*'+str(self.output_width)+' + w;\n'
+        s+= '                if (ii >= 0 && ii < '+str(self.input_height)+' && jj >= 0 && jj < '+str(self.input_width)+')\n'
+        s+= '                    output_cur[i*'+str(self.patches_width)+' + j] = output_pre[(c_offset*'+str(self.input_height)+' + ii)*'+str(self.input_width)+' + jj];\n'
+        s+= '                else\n'
+        s+= '                    output_cur[i*'+str(self.patches_width)+' + j] = 0;\n'
+        s+= '            }\n'
+        s+= '        }\n'
+        s+= '    }\n'
+        s+= '    \n\n'
+        
+        return s
+
+    def write_im2row(self):
+        s = '    // im2row\n'
+        s+= '    for (int i = 0; i < '+str(self.patches_height)+'; ++i) {\n\n'
+        s+= '        int i_offset = (i / '+str(self.kernel_w)+') % '+str(self.kernel_h)+';\n'
+        s+= '        int j_offset = i % '+str(self.kernel_w)+';\n'
+        s+= '        int c_offset = i / '+str(self.kernel_h)+' / '+str(self.kernel_w)+';\n\n'
+        s+= '        for (int h = 0; h < '+str(self.output_height)+'; ++h) {\n'
+        s+= '            for (int w = 0; w < '+str(self.output_width)+'; ++w) {\n\n'
+        s+= '                int ii = h * '+str(self.strides)+' - '+str(self.pad_top)+' + i_offset; \n'
+        s+= '                int jj = w * '+str(self.strides)+' - '+str(self.pad_left)+' + j_offset;\n\n'
+        s+= '                int j = w*'+str(self.output_height)+' + h;\n'
+        s+= '                if (ii >= 0 && ii < '+str(self.input_height)+' && jj >= 0 && jj < '+str(self.input_width)+')\n'
+        s+= '                    output_cur[j*'+str(self.patches_height)+' + i] = output_pre[(c_offset*'+str(self.input_height)+' + ii)*'+str(self.input_width)+' + jj];\n'
+        s+= '                else\n'
+        s+= '                    output_cur[j*'+str(self.patches_height)+' + i] = 0;\n'
+        s+= '            }\n'
+        s+= '        }\n'
+        s+= '    }\n'
+        s+= '    \n\n'
+        
+        return s
+
+    def write_gemm_nn(self, m, n, k, A, B, C):
+
+        self.m = m
+        self.n = n
+        self.k = k
+        self.A = A
+        self.ldA = k
+        self.B = B
+        self.ldB = n
+        self.C = C
+        self.ldC = n
+        a = self.activation_function.write_activation_str('output')
+        s = '    // gemm_nn\n'
+        s+= '    for (int i=0; i<'+str(self.m)+'; i++){\n'
+        s+= '       for (int p=0; p<'+str(self.k)+'; ++p){\n'
+        s+= '           float register weight = '+str(self.A)+'[i*'+str(self.ldA)+'+p];\n'
+        s+= '           for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '               '+str(self.C)+'[i*'+str(self.ldC)+' + j] += weight * '+str(self.B)+'[p*'+str(self.ldB)+' + j];\n'
+        s+= '           }\n'
+        s+= '       }\n'
+        s+= '        for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '            float register output = ' +str(self.C)+'[i*'+str(self.ldC)+' + j];\n'
+        s+= '            output += biases_' + self.name + '_' + str('{:02d}'.format(self.idx))+'[i];\n'
+        s+= '            '+str(self.C)+'[i*'+str(self.ldC)+' + j] = '+a+';\n'
+        s+= '        }\n'
+        s+= '    }\n\n'        
+        return s
+    
+    def write_gemm_nt(self, m, n, k, A, B, C):
+
+        self.m = m
+        self.n = n
+        self.k = k
+        self.A = A
+        self.ldA = k
+        self.B = B
+        self.ldB = k
+        self.C = C
+        self.ldC = n
+        a = self.activation_function.write_activation_str('output')
+
+        s = '    // gemm_nt\n'
+        s+= '    for (int i=0; i<'+str(self.m)+'; i++){\n'
+        s+= '       for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '           float register output = 0;\n'
+        s+= '           for (int p=0; p<'+str(self.k)+'; ++p){\n'
+        s+= '               output += '+str(self.A)+'[i*'+str(self.ldA)+'+p] * '+str(self.B)+'[j*'+str(self.ldB)+' + p];\n'
+        s+= '           }\n'
+        s+= '           output += biases_'+ self.name + '_' + str("{:02d}".format(self.idx))+'[i];\n'
+        s+= '           '+str(self.C)+'[i*'+str(self.ldC)+' + j] += '+a+';\n'
+        s+= '       }\n'
+        s+= '    }\n\n'
+        
+        return s
+
+    def write_gemm_tn(self, m, n, k, A, B, C):
+
+        self.m = m
+        self.n = n
+        self.k = k
+        self.A = A
+        self.ldA = m
+        self.B = B
+        self.ldB = n
+        self.C = C
+        self.ldC = n
+
+        s = '    // gemm_tn\n'
+        s+= '    for (int i=0; i<'+str(self.m)+'; i++){\n'
+        s+= '       for (int p=0; p<'+str(self.k)+'; ++p){\n'
+        s+= '           float register weight = '+str(self.A)+'[p*'+str(self.ldA)+'+i];\n'
+        s+= '           for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '               '+str(self.C)+'[i*'+str(self.ldC)+' + j] += weight * '+str(self.B)+'[p*'+str(self.ldB)+' + j];\n'
+        s+= '           }\n'
+        s+= '       }\n'
+        s+= '    }\n\n'
+        
+        return s
+
+    def write_gemm_tt(self, m, n, k, A, B, C):
+
+        self.m = m
+        self.n = n
+        self.k = k
+        self.A = A
+        self.ldA = m
+        self.B = B
+        self.ldB = k
+        self.C = C
+        self.ldC = n
+
+        s = '    // gemm_tt\n'
+        s+= '    for (int i=0; i<'+str(self.m)+'; i++){\n'
+        s+= '       for(int j=0; j<'+str(self.n)+'; ++j){\n'
+        s+= '           float register sum = 0;\n'
+        s+= '           for (int p=0; p<'+str(self.k)+'; ++p){\n'
+        s+= '               sum += '+str(self.A)+'[p*'+str(self.ldA)+'+i] * '+str(self.B)+'[j*'+str(self.ldB)+' + p];\n'
+        s+= '           }\n'
+        s+= '           '+str(self.C)+'[i*'+str(self.ldC)+' + j] += sum;\n'
+        s+= '       }\n'
+        s+= '    }\n\n'
+        
+        return s
+
+    def write_to_function_source_file(self, source_file):
+        source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
+        patch_building_code = self.algo_patch_building_mapping[self.conv_algorithm]()
+        source_file.write(patch_building_code)
+        source_file.write('    for (int k = 0; k < '+str(self.patches_height*self.patches_width)+'; ++k){\n        output_pre[k] = output_cur[k];\n        output_cur[k] = 0;\n    }\n')
+        gemm_code = self.algo_gemm_mapping[self.conv_algorithm](self.nb_filters, self.patches_width, self.patches_height, 'weights_' + self.name + '_' + str("{:02d}".format(self.idx)), "output_pre", "output_cur")
+        source_file.write(gemm_code)
+
 class Pooling2D(Layers):
-    def __init__(self, idx, size, padding, strides, pool_size, input_shape, output_shape, **kwds):
+    def __init__(self, idx, data_format, size, padding, strides, pool_size, input_shape, output_shape, **kwargs):
         
         super().__init__()
         self.idx = idx
+        self.data_format = data_format
         self.size = size
         self.name = ''
         self.padding = padding
         self.strides = strides
         self.pool_size = pool_size
-        self.input_height = input_shape[1]
-        self.input_width = input_shape[2]
-        self.input_channels = input_shape[3]
-        self.output_height = output_shape[1]
-        self.output_width = output_shape[2]
+
+        if self.data_format == 'channels_first':
+            self.input_channels = input_shape[1]
+            self.input_height = input_shape[2]
+            self.input_width = input_shape[3]
+            self.output_height = output_shape[2]
+            self.output_width = output_shape[3]
+
+        elif self.data_format == 'channels_last':
+            self.input_height = input_shape[1]
+            self.input_width = input_shape[2]
+            self.input_channels = input_shape[3]
+            self.output_height = output_shape[1]
+            self.output_width = output_shape[2]
+
         self.pooling_funtion = ''
         self.local_var = ''
         self.local_var_2 = ''
@@ -601,177 +650,54 @@ class Pooling2D(Layers):
         else:
             self.pad_right, self.pad_left, self.pad_bottom, self.pad_top = 0, 0, 0, 0
 
-    def write_to_layer_c_files(self, data_type, version, layers_source_file, layers_header_file):
-
-        if version == 'v1':
-
-            layers_source_file.write('int ' + self.name + '(int layer_idx, ' + data_type + ' *input, '+ data_type + ' *output) \n{ \n')
-
-            layers_source_file.write(self.declare_local_vars(data_type))
-            
-            layers_source_file.write('    for (int c = 0; c < net[layer_idx].input_channels; ++c)\n    {\n')
-            layers_source_file.write('        for (int i = 0; i < net[layer_idx].output_height; ++i)\n        {\n')
-            layers_source_file.write('            for (int j = 0; j < net[layer_idx].output_width; ++j)\n            {\n')
-            
-            layers_source_file.write('                ' + self.update_local_vars())
-            
-            layers_source_file.write('                for (int m = 0; m < net[layer_idx].pool_size; ++m)\n                {\n')
-            layers_source_file.write('                    for (int n = 0; n < net[layer_idx].pool_size; ++n)\n                    {\n')
-            layers_source_file.write('                        int ii = i*net[layer_idx].strides + m - net[layer_idx].pad_left;\n')
-            layers_source_file.write('                        int jj = j*net[layer_idx].strides + n - net[layer_idx].pad_top;\n\n')
-            layers_source_file.write('                        if (ii >= 0 && ii < net[layer_idx].input_height && jj >= 0 && jj < net[layer_idx].input_width)\n                        {\n')
-
-            layers_source_file.write('            ' + self.specific_function(version, '(ii*net[layer_idx].input_width + jj)*net[layer_idx].input_channels + c', 'input'))
-            layers_source_file.write('                        }\n                    }\n                }\n')
-
-            layers_source_file.write('            ' + self.generate_output_str('(i*net[layer_idx].output_width + j)*net[layer_idx].input_channels + c', 'output'))
-            layers_source_file.write('            }\n        }\n    }\n\n    return 0;\n}\n\n')
-            
-            layers_header_file.write('int ' + self.name + '(int layer_idx, ' + data_type + ' *input, '+ data_type + ' *output);\n')
-
     def generate_output_str(self, index, output):
         
         return '    '+output+'['+index+'] = '+ self.output_var +';\n\n'
 
     @abstractmethod    
-    def specific_function(self, version, index, input_of_layer):
+    def specific_function(self, index, input_of_layer):
         pass
 
-    def write_to_function_source_file(self, data_type, version, source_file):
+    def write_to_function_source_file(self, source_file):
  
-        if version == 'v2':
-            source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
-            source_file.write('    for (int c = 0; c < '+str(self.input_channels)+'; ++c)\n    {\n')
-            source_file.write('        for (int i = 0; i < '+str(self.output_height)+'; ++i)\n        {\n')
-            source_file.write('            for (int j = 0; j < '+str(self.output_width)+'; ++j)\n            {\n')
+        source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
+        source_file.write('    for (int c = 0; c < '+str(self.input_channels)+'; ++c)\n    {\n')
+        source_file.write('        for (int i = 0; i < '+str(self.output_height)+'; ++i)\n        {\n')
+        source_file.write('            for (int j = 0; j < '+str(self.output_width)+'; ++j)\n            {\n')
 
-            source_file.write('            ' + self.update_local_vars())
+        source_file.write('            ' + self.update_local_vars())
 
-            source_file.write('                for (int m = 0; m < '+str(self.pool_size)+'; ++m)\n                {\n')
-            source_file.write('                    for (int n = 0; n < '+str(self.pool_size)+'; ++n)\n                    {\n')
-            source_file.write('                        int ii = i*'+str(self.strides)+' + m - '+str(self.pad_left)+';\n')
-            source_file.write('                        int jj = j*'+str(self.strides)+' + n - '+str(self.pad_top)+';\n\n')
-            source_file.write('                        if (ii >= 0 && ii < '+str( self.input_height)+' && jj >= 0 && jj < '+str(self.input_width)+')\n                        {\n')
+        source_file.write('                for (int m = 0; m < '+str(self.pool_size)+'; ++m)\n                {\n')
+        source_file.write('                    for (int n = 0; n < '+str(self.pool_size)+'; ++n)\n                    {\n')
+        source_file.write('                        int ii = i*'+str(self.strides)+' + m - '+str(self.pad_left)+';\n')
+        source_file.write('                        int jj = j*'+str(self.strides)+' + n - '+str(self.pad_top)+';\n\n')
+        source_file.write('                        if (ii >= 0 && ii < '+str( self.input_height)+' && jj >= 0 && jj < '+str(self.input_width)+')\n                        {\n')
 
-            source_file.write(self.specific_function(version, '(ii*'+str(self.input_width)+' + jj)*'+str(self.input_channels)+' + c', 'output_pre'))
-            source_file.write('                        }\n                    }\n                }\n')
-            source_file.write('            ' + self.generate_output_str('(i*'+str(self.output_width)+' + j)*'+str(self.input_channels)+' + c', 'output_cur'))
-            source_file.write('            }\n        }\n    }\n\n')
+        source_file.write(self.specific_function('jj + '+str(self.input_width)+'*(ii + '+str(self.input_height)+'*c)', 'output_pre'))
+
+        source_file.write('                        }\n                    }\n                }\n')
+        source_file.write('            ' + self.generate_output_str('j + '+str(self.output_width)+'*(i + '+str(self.output_height)+'*c)', 'output_cur'))
+        source_file.write('            }\n        }\n    }\n\n')
       
-        elif version == 'v3':    
-            if self.idx == 1: input_of_layer = 'nn_input'
-            else: input_of_layer = 'output_pre'
-
-            source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
-            for c in range(self.input_channels):
-                for i in range(self.output_height):
-                    for j in range(self.output_width):
-                        source_file.write(self.update_local_vars() )
-                        
-                        for m in range(self.pool_size):
-                            for n in range(self.pool_size):
-                                
-                                ii = i*self.strides + m - self.pad_left
-                                jj = j*self.strides + n - self.pad_top                                
-                                
-                                if ii >= 0 and ii <self.input_height and jj >= 0 and jj < self.input_width :
-                                    
-                                    source_file.write(self.specific_function(version, str((ii*self.input_width + jj)*self.input_channels+c), input_of_layer))
- 
-                                else:
-                                    continue
-
-                        source_file.write(self.generate_output_str(str((i*self.output_width+ j)*self.input_channels+ c), 'output_cur') + '\n')
-
-        else:
-            pass    
-
-    def write_to_function_header_file(self, version, header_file):
-        
-        if version == 'v1':
-
-            header_file.write('#define l'+str(self.idx)+'_size ' + str(self.size) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_pad_right ' + str(self.pad_right) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_pad_left ' + str(self.pad_left) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_pad_bottom ' + str(self.pad_bottom) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_pad_top ' + str(self.pad_top) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_strides ' + str(self.strides) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_pool_size ' + str(self.pool_size) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_input_height ' + str(self.input_height) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_input_width ' + str(self.input_width) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_input_channels ' + str(self.input_channels) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_output_height ' + str(self.output_height) + '\n')
-            header_file.write('#define l'+str(self.idx)+'_output_width ' + str(self.output_width) + '\n\n')
-
-    def write_to_globalvars_file(self, version, data_type, globalvars_file):
-
-        if version == 'v1':
-            
-            globalvars_file.write('    ['+str(self.idx)+'] = {\n')
-            globalvars_file.write('        .layer_type = '+ self.name +',\n')
-            globalvars_file.write('        .layer_size = l'+str(self.idx)+'_size,\n'   )
-            globalvars_file.write('        .pad_right = l'+str(self.idx)+'_pad_right,\n')
-            globalvars_file.write('        .pad_left = l'+str(self.idx)+'_pad_left,\n')
-            globalvars_file.write('        .pad_bottom = l'+str(self.idx)+'_pad_bottom,\n')
-            globalvars_file.write('        .pad_top = l'+str(self.idx)+'_pad_top,\n')
-            globalvars_file.write('        .strides = l'+str(self.idx)+'_strides,\n')
-            globalvars_file.write('        .pool_size = l'+str(self.idx)+'_pool_size,\n')
-            globalvars_file.write('        .kernel_size = 0x0,\n')
-            globalvars_file.write('        .dilation_rate = 0x0,\n')
-            globalvars_file.write('        .nb_filters = 0x0,\n')
-            globalvars_file.write('        .input_height = l'+str(self.idx)+'_input_height,\n')
-            globalvars_file.write('        .input_width = l'+str(self.idx)+'_input_width,\n')
-            globalvars_file.write('        .input_channels = l'+str(self.idx)+'_input_channels,\n')
-            globalvars_file.write('        .output_height = l'+str(self.idx)+'_output_height,\n')
-            globalvars_file.write('        .output_width = l'+str(self.idx)+'_output_width,\n')
-            globalvars_file.write('        .weights = 0x0,\n')
-            globalvars_file.write('        .biases = 0x0,\n')
-            globalvars_file.write('        .actv_function = 0x0,\n        },\n')
-
     def feedforward(self, input):
-
-        input = input.reshape(self.input_height, self.input_width, self.input_channels)
-        output = np.zeros((self.output_height, self.output_width, self.input_channels))
-        
+        input = input.reshape(self.input_channels, self.input_height, self.input_width)
+        output = np.zeros((self.input_channels, self.output_height, self.output_width))
+                
         if self.pad_right and self.pad_left and self.pad_top and self.pad_bottom:
-            input_padded = np.zeros((self.input_height + self.pad_top + self.pad_bottom, self.input_width + self.pad_left + self.pad_right, self.input_channels))
-            input_padded[self.pad_top:-self.pad_bottom, self.pad_left:-self.pad_right, :] = input
+            input_padded = np.zeros((self.input_channels, self.input_height + self.pad_top + self.pad_bottom, self.input_width + self.pad_left + self.pad_right))
+            input_padded[:, self.pad_top:-self.pad_bottom, self.pad_left:-self.pad_right] = input
         else:
             input_padded = input
 
         for c in range(self.input_channels):
-            for j in range(self.output_width): 
-                for i in range(self.output_height):
-                    output[i,j,c]= self.pooling_function((input_padded[i*self.strides:i*self.strides+self.pool_size, j*self.strides:j*self.strides+self.pool_size, c]))
+            for i in range(self.output_height):
+                for j in range(self.output_width): 
+                    output[c,i,j]= self.pooling_function((input_padded[c, i*self.strides:i*self.strides+self.pool_size, j*self.strides:j*self.strides+self.pool_size]))
         return output
 
-    def generate_flowfacts_dict(self, version):
-        
-        self.version = version
-
-        if self.version == 'v1':
-        
-            values_loop_input_channels = ['for loop', 'c', 'input_channels', 0, (self.input_channels - 1), []]
-            values_loop_output_height = ['for loop', 'i', 'output_height', 0, (self.output_height - 1), []]
-            values_loop_output_width = ['for loop', 'j', 'output_width', 0, (self.output_width - 1), []]
-            values_loop_pool_size_1 = ['for loop', 'm', 'pool_size', 0, (self.pool_size - 1), []]
-            values_loop_pool_size_2 = ['for loop', 'n', 'pool_size', 0, (self.pool_size - 1)]
-
-            self.list_of_values_loops = [values_loop_input_channels, values_loop_output_height, values_loop_output_width, values_loop_pool_size_1, values_loop_pool_size_2]
-
-            loop_output_height = {}
-            loop_output_width = {}
-            loop_input_channels = {}
-            loop_pool_size_1 = {}
-            loop_pool_size_2 = {}
-                
-            self.list_of_dicts = [loop_input_channels, loop_output_height, loop_output_width, loop_pool_size_1, loop_pool_size_2]
-            
-            return Layers.generate_flowfacts_dict(self)
-
 class AveragePooling2D(Pooling2D):
-    def __init__(self, **kwds):
-        super().__init__(**kwds)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         
         self.name = 'AveragePooling2D'
         self.pooling_function = np.mean
@@ -792,24 +718,17 @@ class AveragePooling2D(Pooling2D):
   
         return s
 
-    def specific_function(self, version, index, input_of_layer):
+    def specific_function(self, index, input_of_layer):
         # Computes the average in this subclass AveragePooling2D 
-
-        if version == 'v3':            
-            s = '    '+self.local_var+' += '+input_of_layer+'['+index+'];\n'
-            s += '    '+self.local_var_2+' ++;\n'
             
-       
-        else:
-            
-            s = '                            '+self.local_var+' += '+input_of_layer+'['+index+'];\n'
-            s += '                            '+self.local_var_2+' ++;\n'
+        s = '                            '+self.local_var+' += '+input_of_layer+'['+index+'];\n'
+        s += '                            '+self.local_var_2+' ++;\n'
         
         return s
 
 class MaxPooling2D(Pooling2D):
-    def __init__(self, **kwds):
-        super().__init__(**kwds)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         
         self.name = 'MaxPooling2D'
         self.pooling_function = np.amax
@@ -828,16 +747,12 @@ class MaxPooling2D(Pooling2D):
 
         return s
 
-    def specific_function(self, version, index, input_of_layer):
-        
-        if version == 'v3':       
-            s = '    if ('+input_of_layer+'['+index+'] > '+self.local_var+') '+self.local_var+' = '+input_of_layer+'['+index+'];\n'
+    def specific_function(self, index, input_of_layer):
+        # Computes the average in this subclass AveragePooling2D 
 
-        else:
+        s = '                            if ('+input_of_layer+'['+index+'] > '+self.local_var+')\n'
+        s += '                                '+self.local_var+' = '+input_of_layer+'['+index+'];\n'
 
-            s = '                            if ('+input_of_layer+'['+index+'] > '+self.local_var+')\n'
-            s += '                                '+self.local_var+' = '+input_of_layer+'['+index+'];\n'
-    
         return s
 
 class Softmax(Layers):
@@ -849,79 +764,14 @@ class Softmax(Layers):
         self.size = size
         self.name = 'Softmax'
 
-    def write_to_layer_c_files(self, data_type, version, layers_source_file, layers_header_file):
+    def write_to_function_source_file(self, source_file):
         
-        if version == 'v1':
-
-            layers_source_file.write('int Softmax(int layer_idx, ' + data_type + ' *input, '+ data_type + ' *output) \n{ \n')
-            layers_source_file.write('    '+ data_type + ' sum = 0;\n\n')
-            layers_source_file.write('    for (int i = 0; i < net[layer_idx].layer_size; ++i) \n')
-            layers_source_file.write('        sum += exp(input[i]);\n\n')
-            layers_source_file.write('    for (int j = 0; j < net[layer_idx].layer_size; ++j)\n')
-            layers_source_file.write('        output[j] = exp(input[j])/sum;\n\n')
-            layers_source_file.write('    return 0; \n} \n\n')
-            
-            layers_header_file.write('int Softmax(int layer_idx, ' + data_type + ' *input, '+ data_type + ' *output);\n')
-
-    def write_to_function_source_file(self, data_type, version, source_file):
-        
-        if version == 'v2':    
-            source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
-            source_file.write('    sum = 0;\n\n')
-            source_file.write('    for (int i = 0; i < ' + str(self.size) + '; ++i)\n')
-            source_file.write('        sum += exp(output_pre[i]);\n\n')
-            source_file.write('    for (int j = 0; j < ' + str(self.size) + '; ++j)\n')
-            source_file.write('        output_cur[j] = exp(output_pre[j])/sum;\n\n')
-
-
-        elif version == 'v3':       
-            
-            source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
-            source_file.write('    sum = 0;\n')
-            for i in range(self.size):
-                source_file.write('    sum += exp(output_pre['+ str(i) +']);\n')
-            for j in range(self.size):
-                source_file.write('    output_cur['+str(j)+'] = exp(output_pre['+str(j)+'])/sum;\n')
-            source_file.write('\n')
-
-        else:
-            pass 
-
-    def write_to_function_header_file(self, version, header_file):
-        
-        if version == 'v1':
-            
-            header_file.write('#define l'+str(self.idx)+'_size ' + str(self.size) + '\n\n')
-
-        return
-
-    def write_to_globalvars_file(self, version, data_type, globalvars_file):
-
-        if version == 'v1':
-  
-            globalvars_file.write('    ['+str(self.idx)+'] = {\n')
-            globalvars_file.write('        .layer_type = Softmax,\n')
-            globalvars_file.write('        .layer_size = l'+str(self.idx)+'_size,\n')
-            globalvars_file.write('        .pad_right = 0x0,\n')
-            globalvars_file.write('        .pad_left = 0x0,\n')
-            globalvars_file.write('        .pad_bottom = 0x0,\n')
-            globalvars_file.write('        .pad_top = 0x0,\n')
-            globalvars_file.write('        .strides = 0x0,\n')
-            globalvars_file.write('        .pool_size = 0x0,\n')
-            globalvars_file.write('        .kernel_size = 0x0,\n')
-            globalvars_file.write('        .dilation_rate = 0x0,\n')
-            globalvars_file.write('        .nb_filters = 0x0,\n')
-            globalvars_file.write('        .input_height = 0x0,\n')
-            globalvars_file.write('        .input_width = 0x0,\n')
-            globalvars_file.write('        .input_channels = 0x0,\n')
-            globalvars_file.write('        .output_height = 0x0,\n')
-            globalvars_file.write('        .output_width = 0x0,\n')
-            globalvars_file.write('        .weights = 0x0,\n')
-            globalvars_file.write('        .biases = 0x0,\n')
-            globalvars_file.write('        .actv_function = 0x0\n')
-            globalvars_file.write('        },\n')
-
-        return
+        source_file.write('    // ' + self.name + '_' + str(self.idx) + '\n')
+        source_file.write('    sum = 0;\n\n')
+        source_file.write('    for (int i = 0; i < ' + str(self.size) + '; ++i)\n')
+        source_file.write('        sum += exp(output_pre[i]);\n\n')
+        source_file.write('    for (int j = 0; j < ' + str(self.size) + '; ++j)\n')
+        source_file.write('        output_cur[j] = exp(output_pre[j])/sum;\n\n')
 
     def feedforward(self, input):
         
@@ -929,22 +779,3 @@ class Softmax(Layers):
         output = exp/np.sum(exp)
 
         return output
-    
-    def generate_flowfacts_dict(self, version):
-        
-        self.version = version
-
-        if self.version == 'v1':
-            
-        
-            values_1st_loop = ['for loop', 'i', ('l'+str(self.idx)+'_size'), 0, (self.size - 1)]
-            values_2nd_loop = ['for loop', 'j', ('l'+str(self.idx)+'_size'), 0, (self.size - 1)]
-
-            self.list_of_values_loops = [values_1st_loop, values_2nd_loop]
-
-            first_loop = {}
-            second_loop = {}
-
-            self.list_of_dicts = [first_loop, second_loop]
-
-            return Layers.generate_flowfacts_dict(self)
