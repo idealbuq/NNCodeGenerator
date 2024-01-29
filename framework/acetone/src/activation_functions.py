@@ -123,3 +123,26 @@ class Linear(ActivationFunctions):
         s = local_var
         
         return s
+    
+class Clip(ActivationFunctions):
+    def __init__(self,max,min):
+        super().__init__()
+        self.name = 'clip'
+        self.max = max
+        self.min = min
+    
+    def compute(self, z):
+        return max(self.min, min(self.max, z))
+
+    def generate_activation_c_files(self, data_type, activation_source_file, activation_header_file):
+
+        activation_source_file.write(data_type + " linear ("+data_type+" x)\n{\n    return x;\n}\n\n")
+        activation_header_file.write(data_type +" linear("+data_type+" x);\n")
+
+        return
+
+    def write_activation_str(self, local_var):
+
+        s = local_var +' > '+self.max+' ? '+ str(self.max) +' : (' + local_var + ' < ' + str(self.min) + ' ? ' + str(self.min) + ' : ' + local_var + ')'
+        
+        return s
