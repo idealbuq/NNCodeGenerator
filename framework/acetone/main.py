@@ -19,21 +19,19 @@
 """
 
 import argparse
+import pathlib
 import numpy as np
-from src.neural_network import CodeGenerator_V1, CodeGenerator_V2, CodeGenerator_V3
+from neural_network import CodeGenerator_V2
 
-def main(model_file, test_dataset_file, function_name, nb_tests, version, output_dir):
+def main(model_file, function_name, nb_tests, conv_algorithm, output_dir, test_dataset_file=None):
 
-    print("CODE GENERATOR FOR NEURAL NETWORKS")
+    print("C CODE GENERATOR FOR NEURAL NETWORKS")
 
-    version_mapping = { 'v1' : CodeGenerator_V1,
-                        'v2' : CodeGenerator_V2,
-                        'v3' : CodeGenerator_V3}
+    pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    codegen_class = version_mapping[version]
-
-    net = codegen_class(json_file = model_file, test_dataset_file = test_dataset_file, function_name = function_name, nb_tests = nb_tests)
+    net = CodeGenerator_V2(json_file = model_file, test_dataset_file = test_dataset_file, function_name = function_name, nb_tests = nb_tests, conv_algorithm = conv_algorithm)
     net.generate_c_files(output_dir)
+    net.compute_inference(output_dir)
 
     
 if __name__ == "__main__":
@@ -41,12 +39,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='C code generator for neural networks')
 
     parser.add_argument("model_file", help="Input file that describes the neural network model")
-    parser.add_argument("test_dataset_file", help="Input file that contains test data")
     parser.add_argument("function_name", help="Name of the generated function")
     parser.add_argument("nb_tests", help="Number of inferences process to run")
-    parser.add_argument("version", help="Version to be used for the code generation")
+    parser.add_argument("conv_algorithm", help="Algorithm to be used in convolutional layer. Default is indirect im2col with GeMM")
     parser.add_argument("output_dir", help="Output directory where generated files will be written")
+    parser.add_argument("test_dataset_file", nargs='?', default=None, help="Input file that contains test data")
 
     args = parser.parse_args()
 
-    main(args.model_file, args.test_dataset_file, args.function_name, args.nb_tests, args.version, args.output_dir)
+    main(args.model_file, args.function_name, args.nb_tests, args.conv_algorithm, args.output_dir, args.test_dataset_file)
